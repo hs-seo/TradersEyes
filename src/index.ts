@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { startBot } from "./bot/client";
 import { startCron } from "./scheduler/cron";
+import { startWebServer } from "./web/server";
 import { DISCORD_BOT_TOKEN } from "./config";
 
 async function main() {
@@ -11,6 +12,7 @@ async function main() {
 
   await startBot();
   startCron();
+  startWebServer(Number(process.env.WEB_PORT ?? 3000));
   console.log("✅ TradersEyes 봇 시작 완료");
 }
 

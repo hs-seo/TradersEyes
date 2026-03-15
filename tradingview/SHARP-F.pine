@@ -1,0 +1,283 @@
+// ═══════════════════════════════════════════════════════════════════
+// SHARP-F / SHARP-GF  |  Pine Script v5
+// Structure(CHoCH) + OB + RSI extreme + FVG Confluence
+//
+// 차트   : 4H (BTCUSDT 권장)
+// CB OFF → SHARP-F  |  CB ON → SHARP-GF
+// ═══════════════════════════════════════════════════════════════════
+//@version=5
+strategy(title="SHARP-F | CHoCH+OB+RSI+FVG", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=1, commission_type=strategy.commission.percent, commission_value=0.05, slippage=1, pyramiding=0)
+
+// ─── 입력 ────────────────────────────────────────────────────────
+i_swingLen   = input.int(20,    "CHoCH 스윙 기간 (캔들)",    group="구조 CHoCH", minval=5)
+i_biasExpiry = input.int(100,   "방향 바이어스 유지 기간",    group="구조 CHoCH", minval=10)
+i_obLookback = input.int(30,    "OB 탐색 범위 (캔들)",       group="OB", minval=5)
+i_atrLen     = input.int(14,    "ATR 기간",                  group="OB")
+i_slBuf      = input.float(0.2, "SL 버퍼 (ATR 배수)",        group="OB", step=0.05)
+i_microRisk  = input.float(0.5, "최소 Risk 필터 (ATR 배수)", group="OB", step=0.05)
+i_rsiLen     = input.int(14,    "RSI 기간",                  group="RSI")
+i_rsiLong    = input.int(40,    "롱 진입 RSI <=",             group="RSI", maxval=50)
+i_rsiShort   = input.int(60,    "숏 진입 RSI >=",             group="RSI", minval=50)
+i_fvgProx    = input.float(0.03,"FVG 근접 허용 (%)",          group="FVG", step=0.005)
+i_fvgExpiry  = input.int(30,    "FVG 유효 기간 (캔들)",      group="FVG", minval=5)
+i_tp1R       = input.float(2.0, "TP1 배수 (50% 청산)",       group="청산", step=0.5)
+i_tp2R       = input.float(3.0, "TP2 배수 (전량 청산)",      group="청산", step=0.5)
+i_trailMult  = input.float(1.5, "트레일링 ATR 배수 (1H)",    group="청산", step=0.1)
+i_useCB      = input.bool(false, "Circuit Breaker (SHARP-GF)", group="CB")
+i_cbLosses   = input.int(3,     "CB 연패 기준",               group="CB", minval=2)
+i_cbBars     = input.int(4,     "CB 중단 캔들 수",             group="CB", minval=1)
+
+// ─── 지표 ────────────────────────────────────────────────────────
+rsi   = ta.rsi(close, i_rsiLen)
+atr   = ta.atr(i_atrLen)
+atr1h = request.security(syminfo.tickerid, "60", ta.atr(i_atrLen), gaps=barmerge.gaps_off)
+
+// ─── CHoCH : 스윙 고/저점 이탈 (지연 없음) ───────────────────────
+// prevHigh/prevLow = 현재봉 제외 직전 N봉 최고/최저
+prevHigh = ta.highest(high[1], i_swingLen)
+prevLow  = ta.lowest(low[1],   i_swingLen)
+
+// 현재 종가가 직전 N봉 고점 돌파 → 상승 구조 전환
+// 현재 종가가 직전 N봉 저점 이탈 → 하락 구조 전환
+bullCHoCH = close > prevHigh
+bearCHoCH = close < prevLow
+
+var bool bullBias   = false
+var bool bearBias   = false
+var int  biasExpiry = 0
+
+if bullCHoCH
+    bullBias   := true
+    bearBias   := false
+    biasExpiry := bar_index + i_biasExpiry
+
+if bearCHoCH
+    bearBias   := true
+    bullBias   := false
+    biasExpiry := bar_index + i_biasExpiry
+
+if bar_index > biasExpiry
+    bullBias := false
+    bearBias := false
+
+// ─── OB : 바이어스 방향의 가장 최근 반대색 캔들 ──────────────────
+// 롱 바이어스 → 최근 하락 캔들(베어리시) = Bullish OB
+// 숏 바이어스 → 최근 상승 캔들(불리시) = Bearish OB
+var float bullOBHi = na
+var float bullOBLo = na
+var float bearOBHi = na
+var float bearOBLo = na
+
+if bullBias
+    for i = 1 to i_obLookback
+        if close[i] < open[i]
+            bullOBHi := high[i]
+            bullOBLo := low[i]
+            break
+
+if bearBias
+    for i = 1 to i_obLookback
+        if close[i] > open[i]
+            bearOBHi := high[i]
+            bearOBLo := low[i]
+            break
+
+// 가격이 OB 존 안에 있을 때 활성
+bullOBActive = bullBias and not na(bullOBLo) and close >= bullOBLo and close <= bullOBHi
+bearOBActive = bearBias and not na(bearOBLo) and close >= bearOBLo and close <= bearOBHi
+
+// 바이어스가 꺼지면 OB 리셋
+if not bullBias
+    bullOBHi := na
+    bullOBLo := na
+
+if not bearBias
+    bearOBHi := na
+    bearOBLo := na
+
+// ─── FVG ─────────────────────────────────────────────────────────
+// Bullish FVG : high[2] < low[0]  (상방 갭)
+// Bearish FVG : low[2]  > high[0] (하방 갭)
+var float bFvgLo  = na
+var float bFvgHi  = na
+var int   bFvgBar = na
+var float rFvgLo  = na
+var float rFvgHi  = na
+var int   rFvgBar = na
+
+if low > high[2]
+    bFvgLo  := high[2]
+    bFvgHi  := low
+    bFvgBar := bar_index
+
+if high < low[2]
+    rFvgHi  := low[2]
+    rFvgLo  := high
+    rFvgBar := bar_index
+
+bFvgValid = not na(bFvgBar) and (bar_index - bFvgBar) <= i_fvgExpiry
+rFvgValid = not na(rFvgBar) and (bar_index - rFvgBar) <= i_fvgExpiry
+
+bFvgMid = bFvgValid ? (bFvgLo + bFvgHi) / 2 : na
+rFvgMid = rFvgValid ? (rFvgLo + rFvgHi) / 2 : na
+
+nearBullFVG = bFvgValid and not na(bFvgMid) and (close >= bFvgLo and close <= bFvgHi or math.abs(close - bFvgMid) / bFvgMid <= i_fvgProx)
+nearBearFVG = rFvgValid and not na(rFvgMid) and (close >= rFvgLo and close <= rFvgHi or math.abs(close - rFvgMid) / rFvgMid <= i_fvgProx)
+
+// ─── Circuit Breaker ─────────────────────────────────────────────
+var int consecLosses  = 0
+var int pauseUntil    = 0
+var int prevClosedCnt = 0
+
+if strategy.closedtrades > prevClosedCnt
+    lastPnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if lastPnl < 0
+        consecLosses := consecLosses + 1
+    else
+        consecLosses := 0
+    if i_useCB and consecLosses >= i_cbLosses
+        pauseUntil   := bar_index + i_cbBars
+        consecLosses := 0
+    prevClosedCnt := strategy.closedtrades
+
+cbOK = not i_useCB or bar_index >= pauseUntil
+
+// ─── 진입 조건 ───────────────────────────────────────────────────
+noPos     = strategy.position_size == 0
+rsiLongOK = rsi <= i_rsiLong
+rsiShtOK  = rsi >= i_rsiShort
+
+longCond  = bullBias and bullOBActive and nearBullFVG and rsiLongOK and cbOK and noPos
+shortCond = bearBias and bearOBActive and nearBearFVG and rsiShtOK  and cbOK and noPos
+
+// ─── 포지션 상태 ─────────────────────────────────────────────────
+var float entrySL   = na
+var float entryTP1  = na
+var float entryTP2  = na
+var bool  tp1Done   = false
+var float trailStop = na
+
+// ─── 롱 진입 ─────────────────────────────────────────────────────
+if longCond
+    sl   = bullOBLo - atr * i_slBuf
+    risk = close - sl
+    if risk >= atr * i_microRisk
+        entrySL  := sl
+        entryTP1 := close + risk * i_tp1R
+        entryTP2 := close + risk * i_tp2R
+        tp1Done  := false
+        trailStop := na
+        strategy.entry("Long", strategy.long, comment="L")
+        strategy.exit("LX", "Long", stop=sl, limit=entryTP2)
+
+// ─── 숏 진입 ─────────────────────────────────────────────────────
+if shortCond
+    sl   = bearOBHi + atr * i_slBuf
+    risk = sl - close
+    if risk >= atr * i_microRisk
+        entrySL  := sl
+        entryTP1 := close - risk * i_tp1R
+        entryTP2 := close - risk * i_tp2R
+        tp1Done  := false
+        trailStop := na
+        strategy.entry("Short", strategy.short, comment="S")
+        strategy.exit("SX", "Short", stop=sl, limit=entryTP2)
+
+// ─── TP1 50% 청산 + 트레일링 전환 ────────────────────────────────
+if strategy.position_size > 0 and not tp1Done and not na(entryTP1) and high >= entryTP1
+    strategy.close("Long", qty_percent=50, comment="TP1")
+    tp1Done   := true
+    trailStop := high - atr1h * i_trailMult
+    strategy.exit("LX-tr", "Long", stop=trailStop)
+
+if strategy.position_size < 0 and not tp1Done and not na(entryTP1) and low <= entryTP1
+    strategy.close("Short", qty_percent=50, comment="TP1")
+    tp1Done   := true
+    trailStop := low + atr1h * i_trailMult
+    strategy.exit("SX-tr", "Short", stop=trailStop)
+
+// ─── 트레일링 갱신 ───────────────────────────────────────────────
+if strategy.position_size > 0 and tp1Done
+    trailStop := math.max(nz(trailStop, entrySL), high - atr1h * i_trailMult)
+    strategy.exit("LX-tr", "Long", stop=trailStop)
+
+if strategy.position_size < 0 and tp1Done
+    trailStop := math.min(nz(trailStop, entrySL), low + atr1h * i_trailMult)
+    strategy.exit("SX-tr", "Short", stop=trailStop)
+
+// 포지션 종료 시 초기화
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    tp1Done   := false
+    trailStop := na
+    entrySL   := na
+    entryTP1  := na
+    entryTP2  := na
+
+// ─── 시각화 ──────────────────────────────────────────────────────
+// OB 존
+plotbox_bull = bullBias and not na(bullOBLo)
+plotbox_bear = bearBias and not na(bearOBLo)
+
+var box bOBBox = na
+var box rOBBox = na
+
+if bullOBActive
+    box.delete(bOBBox)
+    bOBBox := box.new(bar_index - 3, bullOBHi, bar_index + 8, bullOBLo, border_color=color.new(color.green, 40), bgcolor=color.new(color.green, 85))
+
+if bearOBActive
+    box.delete(rOBBox)
+    rOBBox := box.new(bar_index - 3, bearOBHi, bar_index + 8, bearOBLo, border_color=color.new(color.red, 40), bgcolor=color.new(color.red, 85))
+
+// FVG 존
+var box bFVGBox = na
+var box rFVGBox = na
+
+if bFvgValid and low > high[2]
+    box.delete(bFVGBox)
+    bFVGBox := box.new(bar_index - 2, bFvgHi, bar_index + i_fvgExpiry, bFvgLo, border_color=color.new(color.aqua, 55), bgcolor=color.new(color.aqua, 90))
+
+if rFvgValid and high < low[2]
+    box.delete(rFVGBox)
+    rFVGBox := box.new(bar_index - 2, rFvgHi, bar_index + i_fvgExpiry, rFvgLo, border_color=color.new(color.orange, 55), bgcolor=color.new(color.orange, 90))
+
+// CHoCH 마커
+plotshape(bullCHoCH, title="Bull CHoCH", location=location.belowbar, style=shape.triangleup,   color=color.new(color.lime, 10), size=size.tiny)
+plotshape(bearCHoCH, title="Bear CHoCH", location=location.abovebar, style=shape.triangledown, color=color.new(color.red,  10), size=size.tiny)
+
+// 바이어스 배경
+bgcolor(bullBias ? color.new(color.green, 97) : bearBias ? color.new(color.red, 97) : na, title="바이어스 배경")
+
+// 진입 신호
+plotshape(longCond,  title="Long",  location=location.belowbar, style=shape.labelup,   color=color.green, text="L", textcolor=color.white, size=size.normal)
+plotshape(shortCond, title="Short", location=location.abovebar, style=shape.labeldown, color=color.red,   text="S", textcolor=color.white, size=size.normal)
+
+// CB 중단 구간
+bgcolor(i_useCB and bar_index < pauseUntil ? color.new(color.gray, 88) : na, title="CB 중단")
+
+// ─── 정보 테이블 ──────────────────────────────────────────────────
+var table t = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 72), border_width=1)
+
+if barstate.islast
+    modeName = i_useCB ? "SHARP-GF" : "SHARP-F"
+    biasStr  = bullBias ? "BULL" : bearBias ? "BEAR" : "NONE"
+    biasCol  = bullBias ? color.lime : bearBias ? color.red : color.gray
+    cbStr    = i_useCB ? (bar_index < pauseUntil ? "중단" : str.tostring(consecLosses) + "연패") : "OFF"
+    cbCol    = bar_index < pauseUntil ? color.orange : color.white
+
+    table.cell(t, 0, 0, "전략",       text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 0, modeName,     text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 1, "바이어스",   text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 1, biasStr,      text_color=biasCol,     text_size=size.small)
+    table.cell(t, 0, 2, "RSI",        text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 2, str.tostring(math.round(rsi, 1)), text_color=rsi <= i_rsiLong ? color.lime : rsi >= i_rsiShort ? color.red : color.white, text_size=size.small)
+    table.cell(t, 0, 3, "OB 활성",    text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 3, bullOBActive ? "BULL" : bearOBActive ? "BEAR" : "-", text_color=bullOBActive ? color.lime : bearOBActive ? color.red : color.gray, text_size=size.small)
+    table.cell(t, 0, 4, "FVG 근접",   text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 4, nearBullFVG ? "BULL" : nearBearFVG ? "BEAR" : "-", text_color=nearBullFVG ? color.lime : nearBearFVG ? color.red : color.gray, text_size=size.small)
+    table.cell(t, 0, 5, "TP1/TP2",    text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 5, str.tostring(i_tp1R) + "R / " + str.tostring(i_tp2R) + "R", text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 6, "Trail",       text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 6, "1H x" + str.tostring(i_trailMult), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 7, "CB",          text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 7, cbStr,         text_color=cbCol,       text_size=size.small)

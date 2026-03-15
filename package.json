@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "deploy-commands": "tsx src/bot/commands/deploy.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "backtest": "tsx src/backtest/runner.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.96",
@@ -15,11 +16,13 @@
     "discord.js": "^14.25.1",
     "dotenv": "^16.4.7",
     "node-cron": "^3.0.3",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/node-cron": "^3.0.11",
+    "@types/uuid": "^10.0.0",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   }

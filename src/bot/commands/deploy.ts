@@ -29,7 +29,28 @@ const commands = [
     .setDescription("현재 S급 즉시 진입 자리 목록"),
   new SlashCommandBuilder()
     .setName("help")
-    .setDescription("TradersEyes 사용법 및 커맨드 안내 (#check_ob 채널 전용)"),
+    .setDescription("TradersEyes 사용법 및 커맨드 안내"),
+  // ── 라이브 트레이딩 커맨드 ──
+  new SlashCommandBuilder()
+    .setName("live-status")
+    .setDescription("라이브 트레이딩 현황 (포지션 + 누적 PnL)"),
+  new SlashCommandBuilder()
+    .setName("live-history")
+    .setDescription("최근 거래 10건 내역"),
+  new SlashCommandBuilder()
+    .setName("live-toggle")
+    .setDescription("심볼 라이브 신호 활성화/비활성화")
+    .addStringOption((opt) =>
+      opt.setName("symbol").setDescription("심볼").setRequired(true)
+        .addChoices(...SYMBOLS.map((s) => ({ name: s, value: s })))
+    )
+    .addStringOption((opt) =>
+      opt.setName("status").setDescription("on / off").setRequired(true)
+        .addChoices({ name: "ON", value: "on" }, { name: "OFF", value: "off" })
+    ),
+  new SlashCommandBuilder()
+    .setName("live-signal")
+    .setDescription("SHARP-GF 신호 즉시 스캔 (수동 트리거)"),
 ].map((cmd) => cmd.toJSON());
 
 async function deploy() {

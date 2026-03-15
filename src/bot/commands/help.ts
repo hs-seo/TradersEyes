@@ -5,10 +5,9 @@ export async function handleHelp(
 ): Promise<void> {
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle("📖 TradersEyes 사용법 — #check_ob 채널 전용 봇")
+    .setTitle("📖 TradersEyes 사용법")
     .setDescription(
-      "ICT/SMC 기반 Order Block 자동 탐지 봇입니다.\n" +
-      "**#check_ob 채널**에서만 사용해주세요.\n\u200b"
+      "ICT/SMC 기반 Order Block 탐지 + SHARP-GF 자동매매 봇입니다.\n\u200b"
     )
     .addFields(
       {
@@ -56,9 +55,48 @@ export async function handleHelp(
         name: "📊 지원 심볼",
         value: "`BTCUSDT` `ETHUSDT` `SOLUSDT` `XRPUSDT` `TRXUSDT` `DOGEUSDT` `ADAUSDT`",
         inline: false,
+      },
+      {
+        name: "\u200b",
+        value: "━━━━━━━━━━━━━━━━━━━━━\n🤖 **SHARP-GF 자동매매 커맨드**",
+        inline: false,
+      },
+      {
+        name: "📈 `/live-status`",
+        value:
+          "현재 열린 포지션, 계좌 잔고, 누적 PnL, 심볼별 활성화 상태를 한눈에 확인합니다.",
+        inline: false,
+      },
+      {
+        name: "📜 `/live-history`",
+        value: "최근 거래 10건의 청산 사유, PnL(R), PnL($)을 조회합니다.",
+        inline: false,
+      },
+      {
+        name: "🔀 `/live-toggle <symbol> <on|off>`",
+        value:
+          "심볼별 자동매매 신호를 활성화/비활성화합니다.\n" +
+          "예) `/live-toggle BTCUSDT off` → BTC 신호 중단\n" +
+          "웹 대시보드(http://localhost:3000)에서도 토글 가능",
+        inline: false,
+      },
+      {
+        name: "🔍 `/live-signal`",
+        value:
+          "4H 캔들 마감을 기다리지 않고 **즉시 SHARP-GF 신호 스캔**을 실행합니다.\n" +
+          "신호 발생 시 Discord 알람 전송 (AUTO_TRADE=true면 자동 주문까지)",
+        inline: false,
+      },
+      {
+        name: "\u200b",
+        value:
+          "**⏰ 자동 실행 스케줄**\n" +
+          "`매 4H 2분 후` — SHARP-GF 신호 스캔 (0:02, 4:02, 8:02, 12:02, 16:02, 20:02)\n" +
+          "`매시 3분` — 열린 포지션 TP1/트레일링/SL 체결 감지",
+        inline: false,
       }
     )
-    .setFooter({ text: "TradersEyes | #check_ob 채널 전용 | ICT/SMC OB 탐지 봇" })
+    .setFooter({ text: "TradersEyes | SHARP-GF 자동매매 봇" })
     .setTimestamp();
 
   await interaction.reply({ embeds: [embed], ephemeral: false });

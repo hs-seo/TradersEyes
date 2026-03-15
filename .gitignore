@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 거래 상태 및 대용량 히스토리 데이터
+/data/
+/backdata/

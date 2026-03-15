@@ -73,7 +73,7 @@ export function formatSAlert(
           inline: false,
         }] : [])
       )
-      .setFooter({ text: `TradersEyes #check_ob | ${kst} KST` });
+      .setFooter({ text: `TradersEyes | ${kst} KST` });
 
     return embed.toJSON();
   });
@@ -103,7 +103,7 @@ export function formatOBResults(result: AnalysisResult): APIEmbed[] {
   const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(`📊 ${symbol} OB 분석 | ${fp(result.currentPrice)}`)
-    .setFooter({ text: `TradersEyes #check_ob | ${kst} KST` });
+    .setFooter({ text: `TradersEyes | ${kst} KST` });
 
   // S급
   if (sGrade.length > 0) {
@@ -183,7 +183,7 @@ export function formatPOI(results: AnalysisResult[]): APIEmbed {
     .setTitle("📌 전체 심볼 POI 현황 (A급 이상)")
     .setDescription(lines.join("\n") || "현재 A급 이상 POI 없음")
     .setTimestamp()
-    .setFooter({ text: "TradersEyes #check_ob — /analyze <symbol> 로 상세 조회" })
+    .setFooter({ text: "TradersEyes — /analyze <symbol> 로 상세 조회" })
     .toJSON();
 }
 
@@ -210,7 +210,7 @@ export function formatAlertList(results: AnalysisResult[]): APIEmbed {
     .setTitle("🚨 현재 S급 진입 자리")
     .setDescription(lines.join("\n") || "현재 S급 자리 없음")
     .setTimestamp()
-    .setFooter({ text: "TradersEyes #check_ob" })
+    .setFooter({ text: "TradersEyes" })
     .toJSON();
 }
 
@@ -227,6 +227,6 @@ export function formatStatusSummary(
     .setTitle("📋 전체 심볼 OB 현황")
     .setDescription(lines.join("\n") || "데이터 없음")
     .setTimestamp()
-    .setFooter({ text: "TradersEyes #check_ob" })
+    .setFooter({ text: "TradersEyes" })
     .toJSON();
 }
