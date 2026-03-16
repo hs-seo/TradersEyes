@@ -7,6 +7,7 @@ import { SYMBOLS } from "../config";
 import { runMonitor } from "../live/monitor";
 import { runPositionManager } from "../live/position-manager";
 import { fetchAccountBalance } from "../live/trader";
+import { updatePOI, setNextScanTime } from "../live/scan-log";
 
 // S급 알림 중복 방지: "심볼:OB-id" 저장
 const alertedIds = new Set<string>();
@@ -22,6 +23,10 @@ export function startCron(): void {
     for (const symbol of SYMBOLS) {
       try {
         const result = await runAnalysis(symbol, false);
+
+        // POI 캐시 갱신 (S/A급만)
+        const currentPrice = result.candles4h.at(-1)?.close ?? 0;
+        updatePOI(symbol, result.gradedOBs, currentPrice);
 
         // S급 OB 필터 — 아직 알림 안 보낸 것만
         const newSGrade = result.gradedOBs.filter(
@@ -59,20 +64,23 @@ export function startCron(): void {
 
   console.log(`[Cron] 전체 심볼 1H 자동 분석 등록 (${CRON_EXPRESSION})`);
 
-  // 4H 캔들 마감 후 SHARP-GF 신호 스캔 (매 4H, 2분 여유)
-  // 0시, 4시, 8시, 12시, 16시, 20시 → 2분 후
-  cron.schedule("2 0,4,8,12,16,20 * * *", async () => {
-    console.log("[Cron] 4H 신호 스캔 시작");
+  // SHARP-GF 신호 스캔 — 매 1H (1H 캔들 마감 2분 후)
+  cron.schedule("2 * * * *", async () => {
+    console.log("[Cron] 1H 신호 스캔 시작");
+    // 다음 스캔 시간: 다음 정시 + 2분
+    const next = new Date();
+    next.setHours(next.getHours() + 1, 2, 0, 0);
+    setNextScanTime(next.getTime());
     try {
       const autoTrade = process.env.AUTO_TRADE === "true";
-      let balance = 10_000; // 기본값 (testnet 연결 실패 시)
+      let balance = 10_000;
       try { balance = await fetchAccountBalance(); } catch { /* ignore */ }
       await runMonitor(balance, autoTrade);
     } catch (err) {
-      console.error("[Cron] 4H 신호 스캔 오류:", err);
+      console.error("[Cron] 신호 스캔 오류:", err);
     }
   });
-  console.log("[Cron] 4H SHARP-GF 신호 스캔 등록 (매 4H 2분 후)");
+  console.log("[Cron] SHARP-GF 신호 스캔 등록 (매시 2분)");
 
   // 1H 포지션 관리 (매시 3분 — 1H 캔들 마감 후)
   cron.schedule("3 * * * *", async () => {

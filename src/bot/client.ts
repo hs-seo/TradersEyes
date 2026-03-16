@@ -11,7 +11,7 @@ import { handleStatus } from "./commands/status";
 import { handlePoi } from "./commands/poi";
 import { handleAlert } from "./commands/alert";
 import { handleHelp } from "./commands/help";
-import { handleLiveStatus, handleLiveHistory, handleLiveToggle, handleLiveSignal } from "./commands/live";
+import { handleLiveStatus, handleLiveHistory, handleLiveToggle, handleLiveSignal, handleLiveMonitor } from "./commands/live";
 import { DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID } from "../config";
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -50,6 +50,9 @@ client.on("interactionCreate", async (interaction: Interaction) => {
       break;
     case "live-signal":
       await handleLiveSignal(interaction);
+      break;
+    case "live-monitor":
+      await handleLiveMonitor(interaction);
       break;
     default:
       console.warn(`[Bot] 알 수 없는 커맨드: ${interaction.commandName}`);

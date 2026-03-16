@@ -16,6 +16,7 @@ import type { Candle } from "../data/types";
 import type { OrderBlock } from "../engine/types";
 import type { SymbolConfig } from "../config";
 import type { LiveSignal } from "./types";
+import type { ConditionDiagnosis } from "./scan-log";
 import { RSI_PERIOD } from "../config";
 
 const LOOKBACK    = 220;
@@ -65,7 +66,7 @@ function calcPositionSize(
 }
 
 /**
- * SHARP-GF 신호 감지
+ * SHARP-GF 신호 감지 (진단 포함)
  * @param candles4h  최근 220+ 4H 캔들 (오래된 순)
  * @param candles1h  최근 200+ 1H 캔들
  * @param candles15m 최근 200+ 15m 캔들
@@ -73,21 +74,34 @@ function calcPositionSize(
  * @param accountUsdt 현재 계좌 잔고 (USDT)
  * @param cbPauseUntil 서킷브레이커 해제 시간 (ms), 0이면 비활성
  */
-export function detectSignal(
+export function detectSignalWithDiagnosis(
   candles4h: Candle[],
   candles1h: Candle[],
   candles15m: Candle[],
   config: SymbolConfig,
   accountUsdt: number,
   cbPauseUntil = 0
-): LiveSignal | null {
-  if (candles4h.length < LOOKBACK) return null;
+): { signal: LiveSignal | null; diagnosis: ConditionDiagnosis } {
+  const emptyDiag = (): ConditionDiagnosis => ({
+    sGradeCount: 0, chochFound: false, bestScore: 0,
+    rsiValue: 50, rsiOk: false, fvgFound: false, failedAt: null,
+  });
+
+  if (candles4h.length < LOOKBACK) {
+    return { signal: null, diagnosis: { ...emptyDiag(), failedAt: "데이터 부족" } };
+  }
 
   const useCircuitBreaker = config.strategy === "SHARP-G" || config.strategy === "SHARP-GF";
-  if (useCircuitBreaker && Date.now() < cbPauseUntil) return null;
+  if (useCircuitBreaker && Date.now() < cbPauseUntil) {
+    return { signal: null, diagnosis: { ...emptyDiag(), failedAt: "서킷브레이커" } };
+  }
 
-  // 최근 220봉 윈도우
-  const window4h = candles4h.slice(-LOOKBACK);
+  // 최근 220봉 윈도우 — 형성 중인 4H 봉 제거 (구조 분석 오염 방지)
+  const FOUR_H_MS = 4 * 60 * 60 * 1000;
+  const current4hOpen = Math.floor(Date.now() / FOUR_H_MS) * FOUR_H_MS;
+  const raw4h = candles4h.slice(-LOOKBACK);
+  const window4h = raw4h.at(-1)!.timestamp >= current4hOpen ? raw4h.slice(0, -1) : raw4h;
+  if (window4h.length < LOOKBACK - 1) return { signal: null, diagnosis: { ...emptyDiag(), failedAt: "데이터 부족" } };
 
   const rsi4h = calculateRSI(window4h.map(c => c.close), RSI_PERIOD);
   const div4h  = detectDivergences(window4h, rsi4h);
@@ -122,35 +136,83 @@ export function detectSignal(
   const breaks15m = detectStructureBreaks(window15m, 3, 80);
   const breaksMain = detectStructureBreaks(window1h, 3, 60);
 
-  const currentPrice = window4h.at(-1)!.close;
+  // currentPrice: 최신 1H 종가 (4H 봉 마감 대기 없이 현재 시장가 반영)
+  const currentPrice = window1h.at(-1)!.close;
   const currentRsi   = rsi4h.at(-1) ?? 50;
 
   const graded = gradeOBs(allObs, currentPrice, breaks15m, breaksMain);
 
-  // SHARP 필터: CHoCH + score≥9 + RSI 극한
-  const candidates = graded.filter(g => {
-    if (g.grade !== "S") return false;
-    if (g.latestBreak?.type !== "CHoCH") return false;
-    if (g.score < 9) return false;
-    const rsiOk = g.ob.direction === "bullish"
-      ? currentRsi <= 40
-      : currentRsi >= 60;
-    if (!rsiOk) return false;
-    return true;
-  });
-
-  if (candidates.length === 0) return null;
-
-  // FVG 필터 (SHARP-F / SHARP-GF)
+  // 진단 기초 데이터
+  const sGrades  = graded.filter(g => g.grade === "S");
+  const bestScore = graded.reduce((max, g) => Math.max(max, g.score), 0);
+  const chochFound = graded.some(g => g.latestBreak?.type === "CHoCH");
   const useFVG = config.strategy === "SHARP-F" || config.strategy === "SHARP-GF";
 
-  for (const g of candidates) {
+  // SHARP 필터
+  if (sGrades.length === 0) {
+    return {
+      signal: null,
+      diagnosis: {
+        sGradeCount: 0, chochFound, bestScore, rsiValue: currentRsi,
+        rsiOk: false, fvgFound: false, failedAt: "S급 OB 없음",
+      },
+    };
+  }
+
+  const hasCHoCH = sGrades.some(g => g.latestBreak?.type === "CHoCH");
+  if (!hasCHoCH) {
+    return {
+      signal: null,
+      diagnosis: {
+        sGradeCount: sGrades.length, chochFound: false, bestScore, rsiValue: currentRsi,
+        rsiOk: false, fvgFound: false, failedAt: "CHoCH 없음",
+      },
+    };
+  }
+
+  const highScore = sGrades.filter(g => g.latestBreak?.type === "CHoCH" && g.score >= 9);
+  if (highScore.length === 0) {
+    return {
+      signal: null,
+      diagnosis: {
+        sGradeCount: sGrades.length, chochFound: true, bestScore, rsiValue: currentRsi,
+        rsiOk: false, fvgFound: false, failedAt: "점수 부족",
+      },
+    };
+  }
+
+  // RSI 극한 체크 (첫 번째 후보 기준)
+  const firstDir = highScore[0].ob.direction;
+  const rsiOk = firstDir === "bullish" ? currentRsi <= 40 : currentRsi >= 60;
+  if (!rsiOk) {
+    return {
+      signal: null,
+      diagnosis: {
+        sGradeCount: sGrades.length, chochFound: true, bestScore, rsiValue: currentRsi,
+        rsiOk: false, fvgFound: false, failedAt: "RSI 미충족",
+      },
+    };
+  }
+
+  // FVG 체크
+  const fvgFound = !useFVG || hasFVGNear(window4h, firstDir, currentPrice);
+  if (!fvgFound) {
+    return {
+      signal: null,
+      diagnosis: {
+        sGradeCount: sGrades.length, chochFound: true, bestScore, rsiValue: currentRsi,
+        rsiOk: true, fvgFound: false, failedAt: "FVG 없음",
+      },
+    };
+  }
+
+  // 진입 시도
+  for (const g of highScore) {
     const { ob } = g;
     const direction = ob.direction;
 
     if (useFVG && !hasFVGNear(window4h, direction, currentPrice)) continue;
 
-    // SL / TP 계산
     const atr4hArr = calcATR(window4h, ATR_PERIOD);
     const atr4h    = atr4hArr.at(-1) ?? 0;
 
@@ -167,7 +229,6 @@ export function detectSignal(
       ? currentPrice + risk * 2
       : currentPrice - risk * 2;
 
-    // TP2: 반대 방향 OB 중 가장 가까운 것, 없으면 risk×3
     const oppositeObs = allObs.filter(
       o => o.direction !== direction &&
            o.timeframe === "4h" &&
@@ -189,23 +250,47 @@ export function detectSignal(
     );
 
     return {
-      symbol:            config.symbol,
-      strategy:          config.strategy,
-      direction,
-      entryPrice:        currentPrice,
-      stop,
-      tp1,
-      tp2,
-      risk,
-      riskPct:           config.riskPct,
-      leverage:          config.leverage,
-      positionSizeUsdt,
-      obType:            ob.type,
-      score:             g.score,
-      rsi:               currentRsi,
-      detectedAt:        Date.now(),
+      signal: {
+        symbol:            config.symbol,
+        strategy:          config.strategy,
+        direction,
+        entryPrice:        currentPrice,
+        stop,
+        tp1,
+        tp2,
+        risk,
+        riskPct:           config.riskPct,
+        leverage:          config.leverage,
+        positionSizeUsdt,
+        obType:            ob.type,
+        score:             g.score,
+        rsi:               currentRsi,
+        detectedAt:        Date.now(),
+      },
+      diagnosis: {
+        sGradeCount: sGrades.length, chochFound: true, bestScore, rsiValue: currentRsi,
+        rsiOk: true, fvgFound: true, failedAt: null,
+      },
     };
   }
 
-  return null;
+  return {
+    signal: null,
+    diagnosis: {
+      sGradeCount: sGrades.length, chochFound: true, bestScore, rsiValue: currentRsi,
+      rsiOk: true, fvgFound: true, failedAt: "진입 조건 미달",
+    },
+  };
+}
+
+/** 하위호환 래퍼 */
+export function detectSignal(
+  candles4h: Candle[],
+  candles1h: Candle[],
+  candles15m: Candle[],
+  config: SymbolConfig,
+  accountUsdt: number,
+  cbPauseUntil = 0
+): LiveSignal | null {
+  return detectSignalWithDiagnosis(candles4h, candles1h, candles15m, config, accountUsdt, cbPauseUntil).signal;
 }

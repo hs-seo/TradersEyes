@@ -5,6 +5,7 @@ import http from "http";
 import { loadState } from "../live/state-store";
 import { SYMBOL_CONFIGS } from "../config";
 import type { SymbolConfig } from "../config";
+import { getScanLog, getLastScanTime, getNextScanTime, getPOI } from "../live/scan-log";
 
 // 심볼 설정은 런타임 변경을 위해 참조를 공유
 export { SYMBOL_CONFIGS };
@@ -61,6 +62,34 @@ const HTML = `<!DOCTYPE html>
       <tbody id="trades"></tbody>
     </table>
   </div>
+
+  <!-- 시스템 상태 바 -->
+  <div class="card">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">시스템 상태</h2>
+    <div class="flex gap-8 text-sm">
+      <div><span class="gray">마지막 스캔</span><br><span id="lastScan" class="text-white">--</span></div>
+      <div><span class="gray">다음 스캔</span><br><span id="nextScan" class="text-white">--</span></div>
+      <div><span class="gray">활성 심볼</span><br><span id="activeSymbols" class="text-white">--</span></div>
+    </div>
+  </div>
+
+  <!-- 대기 중인 POI -->
+  <div class="card">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">대기 중인 POI (S/A급)</h2>
+    <table>
+      <thead><tr><th>심볼</th><th>방향</th><th>등급</th><th>점수</th><th>존 (Low~High)</th><th>거리%</th><th>갱신시각</th></tr></thead>
+      <tbody id="poiTable"></tbody>
+    </table>
+  </div>
+
+  <!-- 최근 스캔 로그 -->
+  <div class="card">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">최근 스캔 로그</h2>
+    <table>
+      <thead><tr><th>시각</th><th>심볼</th><th>결과</th><th>탈락 사유</th><th>S급OB</th><th>CHoCH</th><th>점수</th><th>RSI</th></tr></thead>
+      <tbody id="scanLog"></tbody>
+    </table>
+  </div>
 </div>
 
 <script>
@@ -69,6 +98,45 @@ const ts = (ms) => ms ? new Date(ms).toLocaleString('ko-KR') : '--';
 const dir = (d) => d === 'bullish' ? '<span class="green">LONG</span>' : '<span class="red">SHORT</span>';
 const pnlStyle = (v) => v >= 0 ? 'green' : 'red';
 const sign = (v) => v >= 0 ? '+' : '';
+
+const RESULT_LABELS = { signal: '✅ 신호', skip_position: '⏭ 포지션', skip_cb: '🔒 CB', no_signal: '— 없음' };
+
+async function loadMonitor() {
+  try {
+    const m = await fetch('/api/monitor').then(r => r.json());
+    document.getElementById('lastScan').textContent = m.lastScanAt ? ts(m.lastScanAt) : '없음';
+    document.getElementById('nextScan').textContent = m.nextScanAt ? ts(m.nextScanAt) : '미정';
+    document.getElementById('activeSymbols').textContent = m.activeSymbols + '개';
+
+    document.getElementById('poiTable').innerHTML = m.poi.length === 0
+      ? '<tr><td colspan="7" class="gray text-center py-4">대기 중인 POI 없음</td></tr>'
+      : m.poi.map(p => \`<tr>
+        <td class="font-semibold">\${p.symbol}</td>
+        <td>\${p.direction === 'bullish' ? '<span class="green">LONG</span>' : '<span class="red">SHORT</span>'}</td>
+        <td>\${p.grade}</td>
+        <td>\${p.score}</td>
+        <td class="gray text-xs">$\${p.zoneLow.toFixed(2)} ~ $\${p.zoneHigh.toFixed(2)}</td>
+        <td>\${p.distancePct.toFixed(2)}%</td>
+        <td class="gray text-xs">\${ts(p.updatedAt)}</td>
+      </tr>\`).join('');
+
+    document.getElementById('scanLog').innerHTML = m.scanLog.length === 0
+      ? '<tr><td colspan="8" class="gray text-center py-4">스캔 기록 없음</td></tr>'
+      : m.scanLog.map(e => {
+          const d = e.diagnosis;
+          return \`<tr>
+            <td class="gray text-xs">\${ts(e.scannedAt)}</td>
+            <td class="font-semibold">\${e.symbol}</td>
+            <td>\${RESULT_LABELS[e.result] ?? e.result}</td>
+            <td class="gray text-xs">\${d?.failedAt ?? (e.result === 'signal' ? '—' : '—')}</td>
+            <td>\${d ? d.sGradeCount : '—'}</td>
+            <td>\${d ? (d.chochFound ? '✓' : '✗') : '—'}</td>
+            <td>\${d ? d.bestScore : '—'}</td>
+            <td>\${d ? d.rsiValue.toFixed(1) : '—'}</td>
+          </tr>\`;
+        }).join('');
+  } catch { /* ignore */ }
+}
 
 async function load() {
   const res = await fetch('/api/state').then(r => r.json());
@@ -124,7 +192,9 @@ async function toggle(symbol, enabled) {
 }
 
 load();
+loadMonitor();
 setInterval(load, 30_000);
+setInterval(loadMonitor, 30_000);
 </script>
 </body>
 </html>`;
@@ -142,6 +212,19 @@ export function startWebServer(port = 3000): void {
     if (url === "/api/state") {
       const state = loadState();
       const body = JSON.stringify({ state, configs: SYMBOL_CONFIGS });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(body);
+      return;
+    }
+
+    if (url === "/api/monitor") {
+      const body = JSON.stringify({
+        lastScanAt: getLastScanTime(),
+        nextScanAt: getNextScanTime(),
+        activeSymbols: SYMBOL_CONFIGS.filter(c => c.enabled).length,
+        poi: getPOI(),
+        scanLog: getScanLog().slice(0, 50),
+      });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
       return;

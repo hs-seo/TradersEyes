@@ -11,6 +11,7 @@ import { loadState } from "../../live/state-store";
 import { SYMBOL_CONFIGS } from "../../config";
 import { runMonitor } from "../../live/monitor";
 import { fetchAccountBalance } from "../../live/trader";
+import { getScanLog, getLastScanTime, getNextScanTime, getPOI } from "../../live/scan-log";
 
 const r2 = (n: number) => n.toFixed(2);
 const ts = (ms: number) => new Date(ms).toLocaleString("ko-KR");
@@ -98,6 +99,54 @@ export async function handleLiveToggle(interaction: ChatInputCommandInteraction)
 
   cfg.enabled = onOff;
   await interaction.reply(`${onOff ? "🟢" : "⚫"} **${symbol}** ${onOff ? "활성화" : "비활성화"} 완료`);
+}
+
+// ─── /live-monitor ───────────────────────────────────────────
+export async function handleLiveMonitor(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
+
+  const lastScan = getLastScanTime();
+  const nextScan = getNextScanTime();
+  const poi = getPOI().slice(0, 10);
+  const log = getScanLog().slice(0, 15);
+
+  const RESULT_LABEL: Record<string, string> = {
+    signal: "✅ 신호",
+    skip_position: "⏭ 포지션",
+    skip_cb: "🔒 CB",
+    no_signal: "— 없음",
+  };
+
+  const poiText = poi.length === 0
+    ? "대기 중인 POI 없음"
+    : poi.map(p =>
+        `${p.grade} **${p.symbol}** ${p.direction === "bullish" ? "🟢" : "🔴"} ` +
+        `점수:${p.score} | $${p.zoneLow.toFixed(2)}~${p.zoneHigh.toFixed(2)} | ${p.distancePct.toFixed(2)}% 거리`
+      ).join("\n");
+
+  const logText = log.length === 0
+    ? "스캔 기록 없음"
+    : log.map(e => {
+        const d = e.diagnosis;
+        const label = RESULT_LABEL[e.result] ?? e.result;
+        const failed = d?.failedAt ? ` ← ${d.failedAt}` : "";
+        const rsi = d ? ` RSI:${d.rsiValue.toFixed(1)}` : "";
+        return `\`${new Date(e.scannedAt).toLocaleTimeString("ko-KR")}\` **${e.symbol}** ${label}${failed}${rsi}`;
+      }).join("\n");
+
+  const embed = new EmbedBuilder()
+    .setTitle("🔍 모니터링 현황")
+    .setColor(0x0ea5e9)
+    .addFields(
+      { name: "마지막 스캔", value: lastScan ? ts(lastScan) : "없음", inline: true },
+      { name: "다음 스캔",   value: nextScan ? ts(nextScan) : "미정",  inline: true },
+      { name: "활성 심볼",   value: `${SYMBOL_CONFIGS.filter(c => c.enabled).length}개`, inline: true },
+      { name: `대기 POI (${poi.length}건)`, value: poiText },
+      { name: `최근 스캔 로그 (${log.length}건)`, value: logText },
+    )
+    .setTimestamp();
+
+  await interaction.editReply({ embeds: [embed] });
 }
 
 // ─── /live-signal ────────────────────────────────────────────

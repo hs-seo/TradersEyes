@@ -51,6 +51,9 @@ const commands = [
   new SlashCommandBuilder()
     .setName("live-signal")
     .setDescription("SHARP-GF 신호 즉시 스캔 (수동 트리거)"),
+  new SlashCommandBuilder()
+    .setName("live-monitor")
+    .setDescription("모니터링 현황 (POI 대기 목록 + 최근 스캔 로그)"),
 ].map((cmd) => cmd.toJSON());
 
 async function deploy() {
